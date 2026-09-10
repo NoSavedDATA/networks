@@ -1,0 +1,173 @@
+kernel void conv2d_forward_k(float[] y, float[] x, float[] weight, int batch, int c_in, int c_out, int h, int w, int out_h, int out_w, int ks, int stride, int padding)
+	int idx = bx * 256 + tx
+	int total = batch * c_out * out_h * out_w
+	if idx >= total
+		return
+		
+	int ow = idx % out_w
+	int oh = (idx // out_w) % out_h
+	int oc = (idx // (out_w * out_h)) % c_out
+	int n = idx // (out_w * out_h * c_out)
+	
+	float val = 0.0
+	
+	for ic = 0, ic < c_in
+		for kh = 0, kh < ks
+			for kw = 0, kw < ks
+				int ih = oh * stride - padding + kh
+				int iw = ow * stride - padding + kw
+				
+				if ih >= 0 and ih < h and iw >= 0 and iw < w
+					int in_idx = n * (c_in * h * w) + ic * (h * w) + ih * w + iw
+					int w_idx = ic * (c_out * ks * ks) + oc * (ks * ks) + kh * ks + kw
+					val += x[in_idx] * weight[w_idx]
+					
+	y[idx] = val
+
+kernel void conv2d_backward_weight_shared_k(float[] dw, float[] x, float[] dy, int batch, int c_in, int c_out, int h, int w, int out_h, int out_w, int ks, int stride, int padding)
+	int w_idx = bx
+	int total_w = c_in * c_out * ks * ks
+	if w_idx >= total_w
+		return
+		
+	int kw = w_idx % ks
+	int kh = (w_idx // ks) % ks
+	int oc = (w_idx // (ks * ks)) % c_out
+	int ic = w_idx // (ks * ks * c_out)
+	
+	int spatial_out = out_h * out_w
+	int total_elements = batch * spatial_out
+	int iters = (total_elements + 255) // 256
+	
+	var smem_dw = layout<float, 256, smem>()
+	float local_dw = 0
+	
+	for j = 0, j < iters
+		int i = j * 256 + tx
+		if i < total_elements
+			int ow = i % out_w
+			int oh = (i // out_w) % out_h
+			int n = i // (out_w * out_h)
+			
+			int ih = oh * stride - padding + kh
+			int iw = ow * stride - padding + kw
+			
+			if ih >= 0 and ih < h and iw >= 0 and iw < w
+				int in_idx = n * (c_in * h * w) + ic * (h * w) + ih * w + iw
+				int dy_idx = n * (c_out * out_h * out_w) + oc * (out_h * out_w) + oh * out_w + ow
+				local_dw += x[in_idx] * dy[dy_idx]
+				
+	smem_dw[tx] = local_dw
+	syncthreads()
+	
+	int s = 128
+	for step = 0, step < 8
+		if tx < s
+			smem_dw[tx] += smem_dw[tx + s]
+		syncthreads()
+		s = s // 2
+		
+	if tx == 0
+		dw[w_idx] += smem_dw[0]
+
+kernel void conv2d_backward_input_k(float[] dx, float[] dy, float[] weight, int batch, int c_in, int c_out, int h, int w, int out_h, int out_w, int ks, int stride, int padding)
+	int idx = bx * 256 + tx
+	int total = batch * c_in * h * w
+	if idx >= total
+		return
+		
+	int iw = idx % w
+	int ih = (idx // w) % h
+	int ic = (idx // (w * h)) % c_in
+	int n = idx // (w * h * c_in)
+	
+	float local_dx = 0
+	
+	for oc = 0, oc < c_out
+		for kh = 0, kh < ks
+			for kw = 0, kw < ks
+				int oh_num = ih + padding - kh
+				int ow_num = iw + padding - kw
+				
+				if oh_num % stride == 0 and ow_num % stride == 0
+					int oh = oh_num // stride
+					int ow = ow_num // stride
+					
+					if oh >= 0 and oh < out_h and ow >= 0 and ow < out_w
+						int dy_idx = n * (c_out * out_h * out_w) + oc * (out_h * out_w) + oh * out_w + ow
+						int w_idx = ic * (c_out * ks * ks) + oc * (ks * ks) + kh * ks + kw
+						local_dx += dy[dy_idx] * weight[w_idx]
+						
+	dx[idx] = local_dx
+
+
+def int ConvScratch_backward(array<gpu_tensor> inp, array<gpu_tensor> out, ConvScratch y)
+	y.backprop(inp, out)
+	
+
+
+class ConvScratch
+	gpu_tensor w
+	int padding, stride, ks, m, n
+
+	ctor(int m, int n, int ks, int stride, int padding, str init)
+		self.padding = padding
+		self.stride = stride
+		self.ks = ks
+		self.m = m
+		self.n = n
+
+		self.w = new gpu_tensor([m, n, ks, ks], "conv")
+		self.w.as_weight()
+
+	def gpu_tensor forward(gpu_tensor x)
+		int b = x.dims[0], c = x.dims[1], h = x.dims[2], w = x.dims[3]
+		if c != self.m
+			print("ConvScratch expects the same amount of dims for input and module")
+			print("input dims")
+			x.print_dims()
+			print("Expected input channels: ", self.m)
+			_quit_()
+
+		int out_h = (h - self.ks + 2 * self.padding) // self.stride + 1
+		int out_w = (w - self.ks + 2 * self.padding) // self.stride + 1
+		var new_dims = [b, self.n, out_h, out_w]
+
+		gpu_tensor ret = new gpu_tensor(new_dims, "zeros_pool")
+		
+		int total_out = b * self.n * out_h * out_w
+		int grid_dim = (total_out + 255) // 256
+		
+		launch [grid_dim] [256] smem_size conv2d_forward_k(
+						ret.ptr offby 0, x.ptr offby 0, self.w.ptr offby 0,
+						b, self.m, self.n, h, w, out_h, out_w, self.ks, self.stride, self.padding)
+
+		bool shall_prop = x.shall_prop or self.w.shall_prop
+		if shall_prop
+			$backprop.register_module([x, self.w], [ret], self, "convscratch")
+		ret.shall_prop = shall_prop
+
+		return ret
+		
+	def int backprop(array<gpu_tensor> inp, array<gpu_tensor> out)
+		var x = inp[0]
+		var dw = self.w.getd()
+		var dy = out[0].getd()
+
+		int b = x.dims[0], c = x.dims[1], h = x.dims[2], w = x.dims[3]
+		int out_h = (h - self.ks + 2 * self.padding) // self.stride + 1
+		int out_w = (w - self.ks + 2 * self.padding) // self.stride + 1
+
+		int total_w = self.m * self.n * self.ks * self.ks
+		
+		launch [total_w] [256] smem_size conv2d_backward_weight_shared_k(
+						dw offby 0, x.ptr offby 0, dy offby 0,
+						b, self.m, self.n, h, w, out_h, out_w, self.ks, self.stride, self.padding)
+
+		if x.shall_prop
+			var dx = x.getd()
+			int total_x = b * self.m * h * w
+			int grid_dim_x = (total_x + 255) // 256
+			launch [grid_dim_x] [256] smem_size conv2d_backward_input_k(
+						dx offby 0, dy offby 0, self.w.ptr offby 0,
+						b, self.m, self.n, h, w, out_h, out_w, self.ks, self.stride, self.padding)

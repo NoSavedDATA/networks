@@ -1,0 +1,15 @@
+proto float_pp conv2d_forward(conv2d, any, any, int, int, int)
+
+import frost
+import linear
+import conv
+import conv_scratch
+import avgpool2d
+import batchnorm2d
+
+def int networks_prebuild()
+	$backprop.backs["conv2d"] = Conv2d_backward
+	$backprop.backs["convscratch"] = ConvScratch_backward
+	$backprop.backs["avgpool2d"] = AvgPool2d_backward
+	$backprop.backs["batchnorm2d"] = BatchNorm2d_backward
+

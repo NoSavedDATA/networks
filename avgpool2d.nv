@@ -1,0 +1,106 @@
+kernel void avgpool2d_forward_k(float[] y, float[] x, int n, int c, int h, int w, int out_h, int out_w, int ks, int stride, int padding)
+	int tid = bx * 256 + tx
+	int total = n * c * out_h * out_w
+
+	if tid >= total
+		return
+	int ow = tid % out_w
+	int tmp1 = tid // out_w
+	int oh = tmp1 % out_h
+	int tmp2 = tmp1 // out_h
+	int curr_c = tmp2 % c
+	int curr_n = tmp2 // c
+
+	float sum = 0
+	
+	[0..ks, 0..ks] kh, kw
+		int ih = oh * stride - padding + kh
+		int iw = ow * stride - padding + kw
+		
+		if ih >= 0 and ih < h and iw >= 0 and iw < w
+			int idx = curr_n * (c * h * w) + curr_c * (h * w) + ih * w + iw
+			sum += x[idx]
+				
+	y[tid] = sum / (ks * ks)
+
+kernel void avgpool2d_backward_k(float[] dx, float[] dy, int n, int c, int h, int w, int out_h, int out_w, int ks, int stride, int padding)
+	int tid = bx * 256 + tx
+	int total = n * c * h * w
+
+	if tid >= total
+		return
+
+	int iw = tid % w
+	int tmp1 = tid // w
+	int ih = tmp1 % h
+	int tmp2 = tmp1 // h
+	int curr_c = tmp2 % c
+	int curr_n = tmp2 // c
+
+	float grad = 0
+
+	[0..ks, 0..ks] kh, kw
+		int rem_h = (ih + padding - kh) % stride
+		int rem_w = (iw + padding - kw) % stride
+		
+		if rem_h == 0 and rem_w == 0
+			int oh = (ih + padding - kh) // stride
+			int ow = (iw + padding - kw) // stride
+			
+			if oh >= 0 and oh < out_h and ow >= 0 and ow < out_w
+				int dy_idx = curr_n * (c * out_h * out_w) + curr_c * (out_h * out_w) + oh * out_w + ow
+				grad += dy[dy_idx] / (ks * ks)
+	
+	dx[tid] = grad
+
+
+def int AvgPool2d_backward(array<gpu_tensor> inp, array<gpu_tensor> out, AvgPool2d y)
+	y.backprop(inp, out)
+
+
+class AvgPool2d
+	int ks, stride, padding
+
+	ctor(int ks, int stride=1, int padding=0)
+		self.ks = ks
+		self.stride = stride
+		self.padding = padding
+
+	def gpu_tensor forward(gpu_tensor x)
+
+		int b = x.dims[0], c = x.dims[1], h = x.dims[2], w = x.dims[3]
+
+		int out_h = (h - self.ks + 2*self.padding) // self.stride + 1
+		int out_w = (w - self.ks + 2*self.padding) // self.stride + 1
+
+		array<int> new_dims = [b,c,out_h,out_w]
+
+		gpu_tensor ret = new gpu_tensor(new_dims, "zeros")
+		
+		launch [ret.dims_prod/|256] [256] avgpool2d_forward_k(
+						ret.ptr offby 0, x.ptr offby 0,
+						b, c, h, w, out_h, out_w,
+						self.ks, self.stride, self.padding)
+
+		bool shall_prop = x.shall_prop
+		if shall_prop
+			$backprop.register_module([x], [ret], self, "avgpool2d")
+		ret.shall_prop = shall_prop
+
+		return ret
+		
+	def int backprop(array<gpu_tensor> inp, array<gpu_tensor> out)
+		var x = inp[0]
+		var dx = x.getd()
+		var dy = out[0].getd()
+		
+		int b = x.dims[0], c = x.dims[1], h = x.dims[2], w = x.dims[3]
+		int out_h = (h - self.ks + 2*self.padding) // self.stride + 1
+		int out_w = (w - self.ks + 2*self.padding) // self.stride + 1
+		
+		int total = b*c*h*w
+		
+		launch [total/|256] [256] avgpool2d_backward_k(
+							dx offby 0, dy offby 0,
+							b, c, h, w, out_h, out_w,
+						    self.ks, self.stride, self.padding)

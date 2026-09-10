@@ -1,0 +1,40 @@
+#pragma once
+
+#include "../../../frost/src/pool/include.h"
+#include "../../../frost/src/initialize/initialize.h"
+#include "../../../../src/nsk_cpp.h"
+
+class DT_conv2d {
+  public:
+    // Forward
+    cudnnTensorDescriptor_t input_desc, output_desc;
+    cudnnFilterDescriptor_t filter_desc;
+    cudnnConvolutionDescriptor_t conv_desc;
+    cudnnConvolutionFwdAlgo_t fwd_algo;  
+
+    // Weight backward grad
+    cudnnConvolutionBwdFilterAlgo_t w_bwd_algo;
+    // Input backward grad
+    cudnnConvolutionBwdDataAlgo_t y_bwd_algo;
+
+    std::size_t workspace_size, workspace_size_w_back, workspace_size_y_back;
+    float *d_workspace, *d_workspace_w_back, *d_workspace_y_back;
+
+    bool first_backward=true;
+
+    float *dW=nullptr;    
+    int C, OC, ks, stride, padding, out_H, out_W;
+    int B = 0;
+    int H = 0;
+    int W = 0;
+    std::string Init, Name;
+    std::vector<std::string> Notes;
+
+    DT_conv2d(int C, int OC, int ks, int stride, int padding); 
+
+
+  void SetDescriptors(int, int, int);
+  void InitFilters();
+  float *Forward(float *, float *weight, int, int, int);
+  void Backward(void *, void *, void *, void *, void *, bool);
+};

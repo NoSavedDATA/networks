@@ -1,0 +1,222 @@
+kernel void batchnorm2d_forward_shared_k(float[] y, float[] x, float[] r_mean, float[] r_var, float[] s_mean, float[] s_var, float[] weight, float[] bias, int n, int c, int h, int w, float eps, float momentum, bool training)
+	int c_idx = bx
+	if c_idx >= c
+		return
+
+	int num_elements = n * h * w
+	int hw = h * w
+	int iters = (num_elements + 255) // 256
+	
+	var smem_sum = layout<float, 256, smem>()
+	var smem_var = layout<float, 256, smem>()
+
+	float m = 0
+	float v = 0
+
+	if training
+		float local_sum = 0
+		for j = 0, j < iters
+			int i = j * 256 + tx
+			if i < num_elements
+				int curr_n = i // hw
+				int hw_idx = i % hw
+				int idx = curr_n * (c * hw) + c_idx * hw + hw_idx
+				local_sum += x[idx]
+		
+		smem_sum[tx] = local_sum
+		syncthreads()
+
+		int s = 128
+		for step = 0, step < 8
+			if tx < s
+				smem_sum[tx] += smem_sum[tx + s]
+			syncthreads()
+			s = s // 2
+		
+		if tx == 0
+			m = smem_sum[0] / num_elements
+			s_mean[c_idx] = m
+			smem_sum[0] = m 
+			
+		syncthreads()
+		m = smem_sum[0]
+
+		float local_var = 0
+		for j = 0, j < iters
+			int i = j * 256 + tx
+			if i < num_elements
+				int curr_n = i // hw
+				int hw_idx = i % hw
+				int idx = curr_n * (c * hw) + c_idx * hw + hw_idx
+				float diff = x[idx] - m
+				local_var += diff * diff
+				
+		smem_var[tx] = local_var
+		syncthreads()
+
+		s = 128
+		for step = 0, step < 8
+			if tx < s
+				smem_var[tx] += smem_var[tx + s]
+			syncthreads()
+			s = s // 2
+		
+		if tx == 0
+			v = smem_var[0] / num_elements
+			s_var[c_idx] = v
+			smem_var[0] = v
+			r_mean[c_idx] = (1 - momentum) * r_mean[c_idx] + momentum * m
+			r_var[c_idx] = (1 - momentum) * r_var[c_idx] + momentum * v
+			
+		syncthreads()
+		v = smem_var[0]
+	else
+		if tx == 0
+			smem_sum[0] = r_mean[c_idx]
+			smem_var[0] = r_var[c_idx]
+		syncthreads()
+		m = smem_sum[0]
+		v = smem_var[0]
+
+	float inv_std = 1.0 / sqrt(v + eps)
+	float gamma = weight[c_idx]
+	float beta = bias[c_idx]
+
+	for j = 0, j < iters
+		int i = j * 256 + tx
+		if i < num_elements
+			int curr_n = i // hw
+			int hw_idx = i % hw
+			int idx = curr_n * (c * hw) + c_idx * hw + hw_idx
+			float x_hat = (x[idx] - m) * inv_std
+			y[idx] = gamma * x_hat + beta
+
+kernel void batchnorm2d_backward_shared_k(float[] dx, float[] dy, float[] x, float[] s_mean, float[] s_var, float[] weight, float[] dw, float[] db, int n, int c, int h, int w, float eps, bool needs_input_grad)
+	int c_idx = bx
+	if c_idx >= c
+		return
+
+	int num_elements = n * h * w
+	int hw = h * w
+	int iters = (num_elements + 255) // 256
+	
+	float m = s_mean[c_idx]
+	float v = s_var[c_idx]
+	float inv_std = 1.0 / sqrt(v + eps)
+	float gamma = weight[c_idx]
+	
+	var smem_dw = layout<float, 256, smem>()
+	var smem_db = layout<float, 256, smem>()
+	
+	float local_dw = 0
+	float local_db = 0
+
+	for j = 0, j < iters
+		int i = j * 256 + tx
+		if i < num_elements
+			int curr_n = i // hw
+			int hw_idx = i % hw
+			int idx = curr_n * (c * hw) + c_idx * hw + hw_idx
+			
+			float d = dy[idx]
+			local_db += d
+			float x_hat = (x[idx] - m) * inv_std
+			local_dw += d * x_hat
+
+	smem_dw[tx] = local_dw
+	smem_db[tx] = local_db
+	syncthreads()
+
+	int s = 128
+	for step = 0, step < 8
+		if tx < s
+			smem_dw[tx] += smem_dw[tx + s]
+			smem_db[tx] += smem_db[tx + s]
+		syncthreads()
+		s = s // 2
+
+	if tx == 0
+		dw[c_idx] = smem_dw[0]
+		db[c_idx] = smem_db[0]
+
+	syncthreads()
+	float total_dw = smem_dw[0]
+	float total_db = smem_db[0]
+
+	if needs_input_grad
+		for j = 0, j < iters
+			int i = j * 256 + tx
+			if i < num_elements
+				int curr_n = i // hw
+				int hw_idx = i % hw
+				int idx = curr_n * (c * hw) + c_idx * hw + hw_idx
+				
+				float d = dy[idx]
+				float x_hat = (x[idx] - m) * inv_std
+				dx[idx] = (gamma * inv_std / num_elements) * (num_elements * d - total_db - x_hat * total_dw)
+
+
+def int BatchNorm2d_backward(array<gpu_tensor> inp, array<gpu_tensor> out, BatchNorm2d y)
+	y.backprop(inp, out)
+
+
+class BatchNorm2d
+	int num_features
+	float eps, momentum
+	bool training
+	gpu_tensor weight, bias
+	gpu_tensor running_mean, running_var
+	gpu_tensor saved_mean, saved_var
+
+	ctor(int num_features, float eps, float momentum)
+		self.num_features = num_features
+		self.eps = eps
+		self.momentum = momentum
+		self.training = true
+		
+		array<int> c_dims = [num_features]
+		self.weight = new gpu_tensor(c_dims, "ones")
+		self.bias = new gpu_tensor(c_dims, "zeros")
+		self.running_mean = new gpu_tensor(c_dims, "zeros")
+		self.running_var = new gpu_tensor(c_dims, "ones")
+		self.saved_mean = new gpu_tensor(c_dims, "zeros")
+		self.saved_var = new gpu_tensor(c_dims, "zeros")
+		
+		self.weight.shall_prop = true
+		self.bias.shall_prop = true
+
+		self.weight.as_weight()
+		self.bias.as_weight()
+
+	def gpu_tensor forward(gpu_tensor x)
+		int b = x.dims[0], c = x.dims[1], h = x.dims[2], w = x.dims[3]
+		gpu_tensor ret = new gpu_tensor(x.dims, "zeros_pool")
+		
+		launch [c] [256] smem_size batchnorm2d_forward_shared_k(
+						ret.ptr offby 0, x.ptr offby 0,
+						self.running_mean.ptr offby 0, self.running_var.ptr offby 0,
+						self.saved_mean.ptr offby 0, self.saved_var.ptr offby 0,
+						self.weight.ptr offby 0, self.bias.ptr offby 0,
+						b, c, h, w, self.eps, self.momentum, self.training)
+
+		bool shall_prop = x.shall_prop or self.weight.shall_prop
+		if shall_prop
+			$backprop.register_module([x], [ret], self, "batchnorm2d")
+		ret.shall_prop = shall_prop
+
+		return ret
+		
+	def int backprop(array<gpu_tensor> inp, array<gpu_tensor> out)
+		var x = inp[0]
+		var dx = x.getd()
+		var dy = out[0].getd()
+		var dw = self.weight.getd()
+		var db = self.bias.getd()
+		
+		int b = x.dims[0], c = x.dims[1], h = x.dims[2], w = x.dims[3]
+		
+		launch [c] [256] smem_size batchnorm2d_backward_shared_k(
+						dx offby 0, dy offby 0, x.ptr offby 0,
+						self.saved_mean.ptr offby 0, self.saved_var.ptr offby 0,
+						self.weight.ptr offby 0, dw offby 0, db offby 0,
+						b, c, h, w, self.eps, x.shall_prop)
