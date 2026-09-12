@@ -5,10 +5,10 @@ kernel void batchnorm2d_forward_shared_k(float[] y, float[] x, float[] r_mean, f
 
 	int num_elements = n * h * w
 	int hw = h * w
-	int iters = (num_elements + 255) // 256
+	int iters = num_elements /| 1024
 	
-	var smem_sum = layout<float, 256, smem>()
-	var smem_var = layout<float, 256, smem>()
+	var smem_sum = layout<float, 1024, smem>()
+	var smem_var = layout<float, 1024, smem>()
 
 	float m = 0
 	float v = 0
@@ -16,7 +16,7 @@ kernel void batchnorm2d_forward_shared_k(float[] y, float[] x, float[] r_mean, f
 	if training
 		float local_sum = 0
 		for j = 0, j < iters
-			int i = j * 256 + tx
+			int i = j * 1024 + tx
 			if i < num_elements
 				int curr_n = i // hw
 				int hw_idx = i % hw
@@ -26,8 +26,8 @@ kernel void batchnorm2d_forward_shared_k(float[] y, float[] x, float[] r_mean, f
 		smem_sum[tx] = local_sum
 		syncthreads()
 
-		int s = 128
-		for step = 0, step < 8
+		int s = 512
+		for step = 0, step < 10
 			if tx < s
 				smem_sum[tx] += smem_sum[tx + s]
 			syncthreads()
@@ -43,7 +43,7 @@ kernel void batchnorm2d_forward_shared_k(float[] y, float[] x, float[] r_mean, f
 
 		float local_var = 0
 		for j = 0, j < iters
-			int i = j * 256 + tx
+			int i = j * 1024 + tx
 			if i < num_elements
 				int curr_n = i // hw
 				int hw_idx = i % hw
@@ -54,8 +54,8 @@ kernel void batchnorm2d_forward_shared_k(float[] y, float[] x, float[] r_mean, f
 		smem_var[tx] = local_var
 		syncthreads()
 
-		s = 128
-		for step = 0, step < 8
+		s = 512
+		for step = 0, step < 10
 			if tx < s
 				smem_var[tx] += smem_var[tx + s]
 			syncthreads()
@@ -83,7 +83,7 @@ kernel void batchnorm2d_forward_shared_k(float[] y, float[] x, float[] r_mean, f
 	float beta = bias[c_idx]
 
 	for j = 0, j < iters
-		int i = j * 256 + tx
+		int i = j * 1024 + tx
 		if i < num_elements
 			int curr_n = i // hw
 			int hw_idx = i % hw
@@ -98,21 +98,21 @@ kernel void batchnorm2d_backward_shared_k(float[] dx, float[] dy, float[] x, flo
 
 	int num_elements = n * h * w
 	int hw = h * w
-	int iters = (num_elements + 255) // 256
+	int iters = num_elements /| 1024
 	
 	float m = s_mean[c_idx]
 	float v = s_var[c_idx]
 	float inv_std = 1.0 / sqrt(v + eps)
 	float gamma = weight[c_idx]
 	
-	var smem_dw = layout<float, 256, smem>()
-	var smem_db = layout<float, 256, smem>()
+	var smem_dw = layout<float, 1024, smem>()
+	var smem_db = layout<float, 1024, smem>()
 	
 	float local_dw = 0
 	float local_db = 0
 
 	for j = 0, j < iters
-		int i = j * 256 + tx
+		int i = j * 1024 + tx
 		if i < num_elements
 			int curr_n = i // hw
 			int hw_idx = i % hw
@@ -127,8 +127,8 @@ kernel void batchnorm2d_backward_shared_k(float[] dx, float[] dy, float[] x, flo
 	smem_db[tx] = local_db
 	syncthreads()
 
-	int s = 128
-	for step = 0, step < 8
+	int s = 512
+	for step = 0, step < 10
 		if tx < s
 			smem_dw[tx] += smem_dw[tx + s]
 			smem_db[tx] += smem_db[tx + s]
@@ -145,7 +145,7 @@ kernel void batchnorm2d_backward_shared_k(float[] dx, float[] dy, float[] x, flo
 
 	if needs_input_grad
 		for j = 0, j < iters
-			int i = j * 256 + tx
+			int i = j * 1024 + tx
 			if i < num_elements
 				int curr_n = i // hw
 				int hw_idx = i % hw
@@ -153,7 +153,7 @@ kernel void batchnorm2d_backward_shared_k(float[] dx, float[] dy, float[] x, flo
 				
 				float d = dy[idx]
 				float x_hat = (x[idx] - m) * inv_std
-				dx[idx] = (gamma * inv_std / num_elements) * (num_elements * d - total_db - x_hat * total_dw)
+				dx[idx] += (gamma * inv_std / num_elements) * (num_elements * d - total_db - x_hat * total_dw)
 
 
 def int BatchNorm2d_backward(array<gpu_tensor> inp, array<gpu_tensor> out, BatchNorm2d y)
@@ -192,7 +192,7 @@ class BatchNorm2d
 		int b = x.dims[0], c = x.dims[1], h = x.dims[2], w = x.dims[3]
 		gpu_tensor ret = new gpu_tensor(x.dims, "zeros_pool")
 		
-		launch [c] [256] smem_size batchnorm2d_forward_shared_k(
+		launch [c] [1024] smem_size batchnorm2d_forward_shared_k(
 						ret.ptr offby 0, x.ptr offby 0,
 						self.running_mean.ptr offby 0, self.running_var.ptr offby 0,
 						self.saved_mean.ptr offby 0, self.saved_var.ptr offby 0,
@@ -215,7 +215,7 @@ class BatchNorm2d
 		
 		int b = x.dims[0], c = x.dims[1], h = x.dims[2], w = x.dims[3]
 		
-		launch [c] [256] smem_size batchnorm2d_backward_shared_k(
+		launch [c] [1024] smem_size batchnorm2d_backward_shared_k(
 						dx offby 0, dy offby 0, x.ptr offby 0,
 						self.saved_mean.ptr offby 0, self.saved_var.ptr offby 0,
 						self.weight.ptr offby 0, dw offby 0, db offby 0,

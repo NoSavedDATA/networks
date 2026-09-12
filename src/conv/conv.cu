@@ -304,7 +304,7 @@ void DT_conv2d::Backward(void *x, void *w, void *dx, void *dw, void *dy, bool x_
         y_bwd_algo, //Obtained with getConvolutionBackwardDataAlgorithm
         d_workspace_y_back, 
         workspace_size_y_back, //Obtained with getConvolutionBackwardDataWorkspaceSize
-        &zero,
+        &one,
         input_desc, // filter descriptor
         *(float**)dx
       ));

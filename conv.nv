@@ -14,7 +14,7 @@ class Conv2d
 		self.m=m
 		self.n=n
 		self.conv = new conv2d(m,n, ks,stride,padding)
-		self.w = new gpu_tensor([m,n,ks,ks], "conv")
+		self.w = new gpu_tensor([m,n,ks,ks],init)
 		self.w.as_weight()
 
 	def gpu_tensor forward(gpu_tensor x)

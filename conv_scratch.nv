@@ -98,7 +98,7 @@ kernel void conv2d_backward_input_k(float[] dx, float[] dy, float[] weight, int 
 						int w_idx = ic * (c_out * ks * ks) + oc * (ks * ks) + kh * ks + kw
 						local_dx += dy[dy_idx] * weight[w_idx]
 						
-	dx[idx] = local_dx
+	dx[idx] += local_dx
 
 
 def int ConvScratch_backward(array<gpu_tensor> inp, array<gpu_tensor> out, ConvScratch y)

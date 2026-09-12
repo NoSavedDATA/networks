@@ -1,5 +1,5 @@
-# Frost Deep Learning Framework
-- A deep learning framework for the Neve programming language;
+# Frost Networks
+- A set of neural networks for Neve and Frost.
 
 Neve docs:
 Documentation: [https://neve-lang.dev](https://neve-lang.dev)
