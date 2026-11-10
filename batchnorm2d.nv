@@ -190,18 +190,19 @@ class BatchNorm2d
 
 	def gpu_tensor forward(gpu_tensor x)
 		int b = x.dims[0], c = x.dims[1], h = x.dims[2], w = x.dims[3]
-		gpu_tensor ret = new gpu_tensor(x.dims, "zeros_pool")
-		
+		gpu_tensor ret = own gpu_tensor(x.dims.copy_own(), "zeros_cache")
+
 		launch [c] [1024] smem_size batchnorm2d_forward_shared_k(
-						ret.ptr offby 0, x.ptr offby 0,
-						self.running_mean.ptr offby 0, self.running_var.ptr offby 0,
-						self.saved_mean.ptr offby 0, self.saved_var.ptr offby 0,
-						self.weight.ptr offby 0, self.bias.ptr offby 0,
+						ret.ptr, x.ptr,
+						self.running_mean.ptr, self.running_var.ptr,
+						self.saved_mean.ptr, self.saved_var.ptr,
+						self.weight.ptr, self.bias.ptr,
 						b, c, h, w, self.eps, self.momentum, self.training)
 
 		bool shall_prop = x.shall_prop or self.weight.shall_prop
 		if shall_prop
-			$backprop.register_module([x], [ret], self, "batchnorm2d")
+			&backprop.register_module([x], [ret], self, "batchnorm2d")
+
 		ret.shall_prop = shall_prop
 
 		return ret
@@ -216,7 +217,7 @@ class BatchNorm2d
 		int b = x.dims[0], c = x.dims[1], h = x.dims[2], w = x.dims[3]
 		
 		launch [c] [1024] smem_size batchnorm2d_backward_shared_k(
-						dx offby 0, dy offby 0, x.ptr offby 0,
-						self.saved_mean.ptr offby 0, self.saved_var.ptr offby 0,
-						self.weight.ptr offby 0, dw offby 0, db offby 0,
+						dx, dy, x.ptr,
+						self.saved_mean.ptr, self.saved_var.ptr,
+						self.weight.ptr, dw, db,
 						b, c, h, w, self.eps, x.shall_prop)

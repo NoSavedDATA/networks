@@ -30,13 +30,8 @@ extern "C" DT_conv2d *conv2d_Create(Scope_Struct *ctx, int M, int N, int ks, int
 }
 
 
-extern "C" void *conv2d_forward(Scope_Struct *ctx, DT_conv2d *conv, void *x, void *weight, int b, int h, int w) {
-
-    float *ret = conv->Forward(*(float**)x, *(float**)weight, b, h, w);
-
-    void **ptr = (void**)allocate_pool(ctx, 8, data_name_to_type()["float_pp"]);
-    *ptr = ret;
-    return ptr;
+extern "C" float *conv2d_forward(Scope_Struct *ctx, DT_conv2d *conv, float *x, float *weight, int b, int h, int w) {
+    return conv->Forward(x, weight, b, h, w);
 }
 
 void DT_conv2d::SetDescriptors(int B, int H, int W) {
@@ -199,7 +194,7 @@ float *DT_conv2d::Forward(float *x, float *weight, int B, int H, int W) {
     this->SetDescriptors(B, H, W);
   
   
-  float *d_output = tarena.Allocate<float>(B*out_H*out_W*OC);
+  float *d_output = __tcache__.Allocate<float>(B*OC*out_H*out_W);
 
   constexpr float one = 1.0f;
   constexpr float zero = 0.0f;
@@ -277,12 +272,12 @@ float *DT_conv2d::Forward(float *x, float *weight, int B, int H, int W) {
 
 
 
-extern "C" int conv2d_backward(Scope_Struct *ctx, DT_conv2d *conv, void *x, void *w, void *dx, void *dw, void *dy, bool x_has_grad) {
+extern "C" int conv2d_backward(Scope_Struct *ctx, DT_conv2d *conv, float *x, float *w, float *dx, float *dw, float *dy, bool x_has_grad) {
     conv->Backward(x, w, dx, dw, dy, x_has_grad);
     return 0;
 }
 
-void DT_conv2d::Backward(void *x, void *w, void *dx, void *dw, void *dy, bool x_has_grad) {
+void DT_conv2d::Backward(float *x, float *w, float *dx, float *dw, float *dy, bool x_has_grad) {
   // std::cout << "\nConv2d Backward with H: " << H << " W: " << W << "\n";
 
 
@@ -297,16 +292,16 @@ void DT_conv2d::Backward(void *x, void *w, void *dx, void *dw, void *dy, bool x_
         cudnn,
         &one,
         filter_desc, // input tensor descriptor
-        *(float**)w,
+        w,
         output_desc, // output grad tensor descriptor
-        *(float**)dy,
+        dy,
         conv_desc, // convolution descriptor
         y_bwd_algo, //Obtained with getConvolutionBackwardDataAlgorithm
         d_workspace_y_back, 
         workspace_size_y_back, //Obtained with getConvolutionBackwardDataWorkspaceSize
         &one,
         input_desc, // filter descriptor
-        *(float**)dx
+        dx
       ));
 
 
@@ -319,16 +314,16 @@ void DT_conv2d::Backward(void *x, void *w, void *dx, void *dw, void *dy, bool x_
     cudnn,
     &one,
     input_desc, // input tensor descriptor
-    *(float**)x,
+    x,
     output_desc, // output grad tensor descriptor
-    *(float**)dy,
+    dy,
     conv_desc, // convolution descriptor
     w_bwd_algo, //Obtained with getConvolutionBackwardFilterAlgorithm
     d_workspace_w_back, 
     workspace_size_w_back, //Obtained with getConvolutionBackwardFilterWorkspaceSize
     &one,
     filter_desc, // filter descriptor
-    *(float**)dw
+    dw
   ));
 
 }

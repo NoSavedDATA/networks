@@ -73,18 +73,17 @@ class AvgPool2d
 		int out_h = (h - self.ks + 2*self.padding) // self.stride + 1
 		int out_w = (w - self.ks + 2*self.padding) // self.stride + 1
 
-		array<int> new_dims = [b,c,out_h,out_w]
 
-		gpu_tensor ret = new gpu_tensor(new_dims, "zeros")
+		gpu_tensor ret = own gpu_tensor([b,c,out_h,out_w], "zeros_cache")
 		
 		launch [ret.dims_prod/|1024] [1024] avgpool2d_forward_k(
-						ret.ptr offby 0, x.ptr offby 0,
+						ret.ptr, x.ptr,
 						b, c, h, w, out_h, out_w,
 						self.ks, self.stride, self.padding)
 
 		bool shall_prop = x.shall_prop
 		if shall_prop
-			$backprop.register_module([x], [ret], self, "avgpool2d")
+			&backprop.register_module([x], [ret], self, "avgpool2d")
 		ret.shall_prop = shall_prop
 
 		return ret
@@ -101,6 +100,6 @@ class AvgPool2d
 		int total = b*c*h*w
 		
 		launch [total/|1024] [1024] avgpool2d_backward_k(
-							dx offby 0, dy offby 0,
+							dx, dy,
 							b, c, h, w, out_h, out_w,
 						    self.ks, self.stride, self.padding)

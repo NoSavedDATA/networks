@@ -36,5 +36,5 @@ class DT_conv2d {
   void SetDescriptors(int, int, int);
   void InitFilters();
   float *Forward(float *, float *weight, int, int, int);
-  void Backward(void *, void *, void *, void *, void *, bool);
+  void Backward(float *, float *, float *, float *, float *, bool);
 };

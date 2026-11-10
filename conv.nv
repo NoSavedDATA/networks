@@ -6,6 +6,7 @@ class Conv2d
 	gpu_tensor w
 	conv2d conv
 	int padding, stride, ks, m, n
+	bool training
 
 	ctor(int m, int n, int ks, int stride, int padding, str init)
 		self.padding=padding
@@ -16,6 +17,7 @@ class Conv2d
 		self.conv = new conv2d(m,n, ks,stride,padding)
 		self.w = new gpu_tensor([m,n,ks,ks],init)
 		self.w.as_weight()
+		self.training=true
 
 	def gpu_tensor forward(gpu_tensor x)
 		int b = x.dims[0], c = x.dims[1], h = x.dims[2], w = x.dims[3]
@@ -31,21 +33,47 @@ class Conv2d
 		var new_dims = [b,self.n,out_h,out_w]
 
 		gpu_tensor ret = new gpu_tensor(new_dims, "none")
-		float_pp ptr = self.conv.forward(x.ptr, self.w.ptr, b, h, w)
+		float[] ptr = self.conv.forward(x.ptr, self.w.ptr, b, h, w)
 		ret.ptr = ptr
 
 		bool shall_prop = x.shall_prop or self.w.shall_prop
 		if shall_prop
-			$backprop.register_module([x, self.w], [ret], self, "conv2d")
+			&backprop.register_module([x, self.w], [ret], self, "conv2d")
 		ret.shall_prop = shall_prop
 
 		return ret
+
+
 		
+	def gpu_tensor infer(gpu_tensor x)
+		int b = x.dims[0], c = x.dims[1], h = x.dims[2], w = x.dims[3]
+		# print("conv forward")
+		if c!=self.m
+			print("Conv2d expects the same amount of dims for input and module")
+			print("input dims")
+			x.print_dims()
+			print("Expected input channels: ", self.m)
+			_quit_()
+
+		int out_h = (h - self.ks + 2*self.padding) // self.stride + 1
+		int out_w = (w - self.ks + 2*self.padding) // self.stride + 1
+
+		gpu_tensor ret = own gpu_tensor([b,self.n,out_h,out_w], "none")
+		float[] ptr = self.conv.forward(x.ptr, self.w.ptr, b, h, w)
+		ret.ptr = ptr
+
+		bool shall_prop = x.shall_prop or self.w.shall_prop
+		if shall_prop
+			&backprop.register_module([x, self.w], [ret], self, "conv2d")
+		ret.shall_prop = shall_prop
+
+		return ret
+
 	def int backprop(array<gpu_tensor> inp, array<gpu_tensor> out)
 		var x = inp[0]
 		var dw = self.w.getd()
 
-		float_pp dx = nil
+		float[] dx = nil
 		if x.shall_prop
 			dx = x.getd()
 		self.conv.backward(x.ptr, self.w.ptr,

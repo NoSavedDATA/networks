@@ -139,12 +139,12 @@ class ConvScratch
 		int grid_dim = (total_out + 255) // 256
 		
 		launch [grid_dim] [256] smem_size conv2d_forward_k(
-						ret.ptr offby 0, x.ptr offby 0, self.w.ptr offby 0,
+						ret.ptr, x.ptr, self.w.ptr,
 						b, self.m, self.n, h, w, out_h, out_w, self.ks, self.stride, self.padding)
 
 		bool shall_prop = x.shall_prop or self.w.shall_prop
 		if shall_prop
-			$backprop.register_module([x, self.w], [ret], self, "convscratch")
+			&backprop.register_module([x, self.w], [ret], self, "convscratch")
 		ret.shall_prop = shall_prop
 
 		return ret
@@ -161,7 +161,7 @@ class ConvScratch
 		int total_w = self.m * self.n * self.ks * self.ks
 		
 		launch [total_w] [256] smem_size conv2d_backward_weight_shared_k(
-						dw offby 0, x.ptr offby 0, dy offby 0,
+						dw, x.ptr, dy,
 						b, self.m, self.n, h, w, out_h, out_w, self.ks, self.stride, self.padding)
 
 		if x.shall_prop
@@ -169,5 +169,5 @@ class ConvScratch
 			int total_x = b * self.m * h * w
 			int grid_dim_x = (total_x + 255) // 256
 			launch [grid_dim_x] [256] smem_size conv2d_backward_input_k(
-						dx offby 0, dy offby 0, self.w.ptr offby 0,
+						dx, dy, self.w.ptr,
 						b, self.m, self.n, h, w, out_h, out_w, self.ks, self.stride, self.padding)

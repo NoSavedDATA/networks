@@ -6,6 +6,8 @@ class Linear
 		self.n = n
 		self.w = new gpu_tensor([n,m], init)
 		self.w.as_weight()
+	def void eval()
+		self.w.shall_prop = false
 	def gpu_tensor forward(gpu_tensor x)
 		if x.dims[-1]!=self.m
 			print("Error: Linear expected input dim: ", self.m)
